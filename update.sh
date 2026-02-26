@@ -25,10 +25,11 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 # Step 1: Get properties - either from provided list or fetch all properties for the group
+# if you want to check all properties in the group, leave PROPERTY_LIST empty and make sure to set correct GROUP_ID and CONTRACT_ID below.
 if [ -z "$PROPERTY_LIST" ]; then
   # Get group and contract ID via "akamai property-manager list-groups --section <section>" command.
-  GROUP_ID="grp_18543"
-  CONTRACT_ID="ctr_1-5C13O2"
+  GROUP_ID="grp_xxxxx"
+  CONTRACT_ID="ctr_1Y-123456"
   
   echo "Fetching properties for group $GROUP_ID..."
   PROPERTIES=$(akamai property-manager list-properties \
@@ -63,7 +64,8 @@ while read -r PROPERTY_NAME; do
     continue
   fi
 
-  # Step 4: Check if any mTLS-check has empty behaviors
+  # Step 4: Check if any mTLS-check has empty behaviors. 
+  # Only add the enforce_mtls behavior to those with empty behaviors, to avoid overwriting any existing behavior configurations.
   # jq explanation:
   # ..                                    - recursively walk entire JSON tree
   # | objects                             - only keep JSON objects
