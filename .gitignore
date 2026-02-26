@@ -1,0 +1,5 @@
+# ignore akamai cli logs
+*.log
+
+# don't upload downloaded and created rules
+updated_rules/

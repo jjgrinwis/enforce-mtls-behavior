@@ -1,0 +1,15 @@
+{
+  "name": "enforceMtlsSettings",
+  "options": {
+    "certificateAuthoritySet": [
+      "93378"
+    ],
+    "enableAuthSet": true,
+    "enableDenyRequest": false,
+    "enableOcspStatus": false,
+    "enableCompleteClientCertificate": false,
+    "clientCertificateAttributes": [],
+    "edgeChecksTitle": "",
+    "originChecksTitle": ""
+  }
+}
