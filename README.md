@@ -10,6 +10,7 @@ The script performs the following operations:
 - Downloads the rule tree for each property in the list
 - Identifies properties with an `mTLS-check` rule that has empty behaviors
 - Adds the `enforceMtlsSettings` behavior to those rules
+- Replaces `Certificate invalid` child rule behaviors under `mTLS-check` with the behavior from `custom_response.json`
 - Saves the updated rule trees to the `updated_rules/` directory
 - Creates a new property version with the new behavior added
 
@@ -113,6 +114,25 @@ Edit the `certificateAuthoritySet` array to include your CA Set ID:
 }
 ```
 
+### 3. Configure Custom mTLS Failure Response
+
+Edit [custom_response.json](custom_response.json) to define the behavior that should replace existing behaviors in the `Certificate invalid` child rule under `mTLS-check`.
+
+Example:
+
+```json
+{
+  "name": "constructResponse",
+  "options": {
+    "enabled": true,
+    "responseCode": 403,
+    "forceEviction": false,
+    "ignorePurge": false,
+    "body": "<html><body>Invalid Client Certificate</body></html>"
+  }
+}
+```
+
 ## Usage
 
 ### Basic Usage
@@ -168,8 +188,9 @@ The script creates an `updated_rules/` directory containing:
 2. **Download Rules:** Downloads the rule tree for each property
 3. **Check for mTLS-check Rule:** Searches for rules named `mTLS-check` with empty behaviors
 4. **Add Enforcement:** If found, adds the `enforceMtlsSettings` behavior from `enforce_mtls.json`
-5. **Save Updated Rules:** Writes the updated rule tree to `updated_rules/{property_name}_updated_rules.json`
-6. **Push to Akamai:** Creates a new property version with the updated rules on the Akamai platform
+5. **Replace Invalid-Cert Behavior:** Replaces behaviors on the `Certificate invalid` child rule under `mTLS-check` with `custom_response.json`
+6. **Save Updated Rules:** Writes the updated rule tree to `updated_rules/{property_name}_updated_rules.json`
+7. **Push to Akamai:** Creates a new property version with the updated rules on the Akamai platform
 
 ## Important Notes
 

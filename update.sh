@@ -3,6 +3,7 @@
 # Make sure to select the correct CA set-id in your enforce_mtls.json file before running this script.
 # you can find the CA set-id on API endpoint /mtls-edge-truststore/v2/ca-sets or look it up in Akamai Control Center under "Edge Certificates" > "mTLS Edge Truststore" section.
 ENFORCE_MTLS_FILE="enforce_mtls.json"
+CUSTOM_RESPONSE_FILE="custom_response.json"
 OUTPUT_DIR="updated_rules"
 
 # Define .edgerc section to be used.
@@ -16,6 +17,19 @@ ACCOUNTSWITCH="${ACCOUNTSWITCH:-}"  # empty by default
 # Usage: PROPERTY_LIST="prop1,prop2,prop3" ./update.sh
 PROPERTY_LIST="${PROPERTY_LIST:-}"  # empty by default
 
+# Optional: suppress Node.js deprecation warnings from Akamai CLI internals.
+# Set to false to show warnings again.
+# Usage: SUPPRESS_NODE_DEPRECATION_WARNINGS="false" ./update.sh
+SUPPRESS_NODE_DEPRECATION_WARNINGS="${SUPPRESS_NODE_DEPRECATION_WARNINGS:-true}"
+
+run_akamai() {
+  if [ "$SUPPRESS_NODE_DEPRECATION_WARNINGS" = "true" ]; then
+    NODE_OPTIONS="--no-deprecation" akamai "$@"
+  else
+    akamai "$@"
+  fi
+}
+
 # Build account switch flag if set
 ACCOUNT_SWITCHKEY=""
 if [ -n "$ACCOUNTSWITCH" ]; then
@@ -28,11 +42,11 @@ mkdir -p "$OUTPUT_DIR"
 # if you want to check all properties in the group, leave PROPERTY_LIST empty and make sure to set correct GROUP_ID and CONTRACT_ID below.
 if [ -z "$PROPERTY_LIST" ]; then
   # Get group and contract ID via "akamai property-manager list-groups --section <section>" command.
-  GROUP_ID="grp_xxxxx"
-  CONTRACT_ID="ctr_1Y-123456"
+  GROUP_ID="grp_18xxx"
+  CONTRACT_ID="ctr_1-5Cyyyy"
   
   echo "Fetching properties for group $GROUP_ID..."
-  PROPERTIES=$(akamai property-manager list-properties \
+  PROPERTIES=$(run_akamai property-manager list-properties \
     --section "$SECTION" \
     $ACCOUNT_SWITCHKEY \
     --groupId "$GROUP_ID" \
@@ -53,7 +67,7 @@ while read -r PROPERTY_NAME; do
 
   # Step 3: Download the rules for this property
   RULES_FILE="$OUTPUT_DIR/${PROPERTY_NAME}_rules.json"
-  akamai property-manager show-ruletree \
+  run_akamai property-manager show-ruletree \
     --section "$SECTION" \
     $ACCOUNT_SWITCHKEY \
     --property "$PROPERTY_NAME" \
@@ -88,17 +102,46 @@ while read -r PROPERTY_NAME; do
           continue
         fi
 
-        # Step 6: Push the updated rules back. This will create a new version of the property with the updated rules!
+        # Step 6: replace "Certificate invalid" child behaviors under mTLS-check with custom_response behavior
+        # Count how many "Certificate invalid" child rules exist (across all mTLS-check rules)
+        # so the log shows exactly how many behavior arrays will be replaced.
+        CERT_INVALID_COUNT=$(jq '[.. | objects | select(.name == "mTLS-check") | .children[]? | select((.name | ascii_downcase) == "certificate invalid")] | length' "$UPDATED_FILE")
+        echo "  Replacing behaviors in $CERT_INVALID_COUNT Certificate invalid child rule(s)..."
+
+        TMP_UPDATED_FILE="$OUTPUT_DIR/${PROPERTY_NAME}_updated_rules.tmp.json"
+        # For each mTLS-check -> child named "Certificate invalid" (case-insensitive),
+        # replace the entire .behaviors array with a single behavior object from custom_response.json.
+        # --slurpfile loads custom_response.json into $custom_response as an array, so [0] is the object.
+        jq --slurpfile custom_response "$CUSTOM_RESPONSE_FILE" \
+        '(
+          ..
+          | objects
+          | select(.name == "mTLS-check")
+          | .children[]?
+          | select((.name | ascii_downcase) == "certificate invalid")
+          | .behaviors
+        ) = [$custom_response[0]]' \
+        "$UPDATED_FILE" > "$TMP_UPDATED_FILE"
+
+        if [ $? -ne 0 ]; then
+          echo "  ERROR: Failed to replace Certificate invalid behavior for $PROPERTY_NAME, skipping..."
+          rm -f "$TMP_UPDATED_FILE"
+          continue
+        fi
+
+        mv "$TMP_UPDATED_FILE" "$UPDATED_FILE"
+
+        # Step 7: Push the updated rules back. This will create a new version of the property with the updated rules!
         echo "  Pushing updated rules..."
-        akamai property-manager property-update \
+        run_akamai property-manager property-update \
         --section "$SECTION" \
         $ACCOUNT_SWITCHKEY \
         --property "$PROPERTY_NAME" \
         --file "$UPDATED_FILE" \
         --suppress \
-        --note "Updated mTLS-check behavior via API call" 
+        --note "Updated mTLS-check behavior via API call" > /dev/null
 
-        # Step 7: Activate the property after update (optional, can be done manually after verification)
+        # Step 8: Activate the property after update (optional, can be done manually after verification)
         #  echo "  Activating property on staging..."
         #  akamai property-manager activate-version \
         #  --section "$SECTION" \

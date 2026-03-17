@@ -1,0 +1,10 @@
+{
+  "name": "constructResponse",
+  "options": {
+    "enabled": true,
+    "responseCode": 403,
+    "forceEviction": false,
+    "ignorePurge": false,
+    "body": "<html><body>Invalid Client Certificate</body></html>"
+  }
+}
