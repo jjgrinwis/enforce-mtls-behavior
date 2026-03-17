@@ -88,70 +88,90 @@ while read -r PROPERTY_NAME; do
   #     and                               -   AND
   #     (.behaviors | length == 0)        -   behaviors array is empty
   #   )
-  if jq -e '.. | objects | select(.name == "mTLS-check" and (.behaviors | length == 0))' "$RULES_FILE" > /dev/null 2>&1; then
-    echo "  found mTLS-check with empty behavior, adding enforce_mtls..."
+  MTLS_EMPTY_COUNT=$(jq '[.. | objects | select(.name == "mTLS-check" and (.behaviors | length == 0))] | length' "$RULES_FILE")
+  UPDATED_FILE="$OUTPUT_DIR/${PROPERTY_NAME}_updated_rules.json"
+  TMP_UPDATED_FILE="$OUTPUT_DIR/${PROPERTY_NAME}_updated_rules.tmp.json"
+  CHANGES_MADE="false"
 
-        # Step 5: add behavior to mTLS-check (only those with empty behaviors) and save updated rules to new file
-        UPDATED_FILE="$OUTPUT_DIR/${PROPERTY_NAME}_updated_rules.json"
-        jq --slurpfile enforce_mtls "$ENFORCE_MTLS_FILE" \
-        '(.rules.children[] | .. | objects | select(.name == "mTLS-check" and (.behaviors | length == 0)) | .behaviors) = $enforce_mtls' \
-        "$RULES_FILE" > "$UPDATED_FILE"
+  cp "$RULES_FILE" "$UPDATED_FILE"
 
-        if [ $? -ne 0 ]; then
-          echo "  ERROR: Failed to update rules for $PROPERTY_NAME, skipping..."
-          continue
-        fi
+  if [ "$MTLS_EMPTY_COUNT" -gt 0 ]; then
+    echo "  found $MTLS_EMPTY_COUNT mTLS-check rule(s) with empty behavior, adding enforce_mtls..."
 
-        # Step 6: replace "Certificate invalid" child behaviors under mTLS-check with custom_response behavior
-        # Count how many "Certificate invalid" child rules exist (across all mTLS-check rules)
-        # so the log shows exactly how many behavior arrays will be replaced.
-        CERT_INVALID_COUNT=$(jq '[.. | objects | select(.name == "mTLS-check") | .children[]? | select((.name | ascii_downcase) == "certificate invalid")] | length' "$UPDATED_FILE")
-        echo "  Replacing behaviors in $CERT_INVALID_COUNT Certificate invalid child rule(s)..."
+    # Step 5: add behavior to mTLS-check (only those with empty behaviors)
+    jq --slurpfile enforce_mtls "$ENFORCE_MTLS_FILE" \
+    '(.rules.children[] | .. | objects | select(.name == "mTLS-check" and (.behaviors | length == 0)) | .behaviors) = $enforce_mtls' \
+    "$UPDATED_FILE" > "$TMP_UPDATED_FILE"
 
-        TMP_UPDATED_FILE="$OUTPUT_DIR/${PROPERTY_NAME}_updated_rules.tmp.json"
-        # For each mTLS-check -> child named "Certificate invalid" (case-insensitive),
-        # replace the entire .behaviors array with a single behavior object from custom_response.json.
-        # --slurpfile loads custom_response.json into $custom_response as an array, so [0] is the object.
-        jq --slurpfile custom_response "$CUSTOM_RESPONSE_FILE" \
-        '(
-          ..
-          | objects
-          | select(.name == "mTLS-check")
-          | .children[]?
-          | select((.name | ascii_downcase) == "certificate invalid")
-          | .behaviors
-        ) = [$custom_response[0]]' \
-        "$UPDATED_FILE" > "$TMP_UPDATED_FILE"
+    if [ $? -ne 0 ]; then
+      echo "  ERROR: Failed to update rules for $PROPERTY_NAME, skipping..."
+      rm -f "$TMP_UPDATED_FILE" "$UPDATED_FILE"
+      continue
+    fi
 
-        if [ $? -ne 0 ]; then
-          echo "  ERROR: Failed to replace Certificate invalid behavior for $PROPERTY_NAME, skipping..."
-          rm -f "$TMP_UPDATED_FILE"
-          continue
-        fi
-
-        mv "$TMP_UPDATED_FILE" "$UPDATED_FILE"
-
-        # Step 7: Push the updated rules back. This will create a new version of the property with the updated rules!
-        echo "  Pushing updated rules..."
-        run_akamai property-manager property-update \
-        --section "$SECTION" \
-        $ACCOUNT_SWITCHKEY \
-        --property "$PROPERTY_NAME" \
-        --file "$UPDATED_FILE" \
-        --suppress \
-        --note "Updated mTLS-check behavior via API call" > /dev/null
-
-        # Step 8: Activate the property after update (optional, can be done manually after verification)
-        #  echo "  Activating property on staging..."
-        #  akamai property-manager activate-version \
-        #  --section "$SECTION" \
-        #  $ACCOUNT_SWITCHKEY \
-        #  --network staging \
-        #  --property "$PROPERTY_NAME"
-
+    mv "$TMP_UPDATED_FILE" "$UPDATED_FILE"
+    CHANGES_MADE="true"
   else
-    echo "  No mTLS-check with empty behavior found, skipping..."
+    echo "  No mTLS-check with empty behavior found. Checking Certificate invalid behavior anyway..."
   fi
+
+  # Step 6: ensure "Certificate invalid" child behavior uses custom_response (not legacy customBehavior)
+  CERT_INVALID_COUNT=$(jq '[.. | objects | select(.name == "mTLS-check") | .children[]? | select((.name | ascii_downcase) == "certificate invalid")] | length' "$UPDATED_FILE")
+  CERT_INVALID_CUSTOM_COUNT=$(jq '[.. | objects | select(.name == "mTLS-check") | .children[]? | select((.name | ascii_downcase) == "certificate invalid") | select(any(.behaviors[]?; .name == "customBehavior"))] | length' "$UPDATED_FILE")
+
+  echo "  Checking $CERT_INVALID_COUNT Certificate invalid child rule(s); $CERT_INVALID_CUSTOM_COUNT still use customBehavior."
+
+  if [ "$CERT_INVALID_CUSTOM_COUNT" -gt 0 ]; then
+    # For each mTLS-check -> child named "Certificate invalid" (case-insensitive),
+    # replace the entire .behaviors array with a single behavior object from custom_response.json.
+    jq --slurpfile custom_response "$CUSTOM_RESPONSE_FILE" \
+    '(
+      ..
+      | objects
+      | select(.name == "mTLS-check")
+      | .children[]?
+      | select((.name | ascii_downcase) == "certificate invalid")
+      | .behaviors
+    ) = [$custom_response[0]]' \
+    "$UPDATED_FILE" > "$TMP_UPDATED_FILE"
+
+    if [ $? -ne 0 ]; then
+      echo "  ERROR: Failed to replace Certificate invalid behavior for $PROPERTY_NAME, skipping..."
+      rm -f "$TMP_UPDATED_FILE" "$UPDATED_FILE"
+      continue
+    fi
+
+    mv "$TMP_UPDATED_FILE" "$UPDATED_FILE"
+    CHANGES_MADE="true"
+    echo "  Replaced Certificate invalid behaviors with custom_response."
+  elif [ "$CERT_INVALID_COUNT" -gt 0 ]; then
+    echo "  Certificate invalid behavior already up to date."
+  else
+    echo "  No Certificate invalid child rule found under mTLS-check."
+  fi
+
+  # Step 7: Push only if at least one update changed the rule tree
+  if [ "$CHANGES_MADE" = "true" ]; then
+    echo "  Pushing updated rules..."
+    run_akamai property-manager property-update \
+    --section "$SECTION" \
+    $ACCOUNT_SWITCHKEY \
+    --property "$PROPERTY_NAME" \
+    --file "$UPDATED_FILE" \
+    --suppress \
+    --note "Updated mTLS-check behavior via API call" > /dev/null
+  else
+    echo "  No changes required for $PROPERTY_NAME, skipping push."
+    rm -f "$UPDATED_FILE"
+  fi
+
+  # Step 8: Activate the property after update (optional, can be done manually after verification)
+  #  echo "  Activating property on staging..."
+  #  akamai property-manager activate-version \
+  #  --section "$SECTION" \
+  #  $ACCOUNT_SWITCHKEY \
+  #  --network staging \
+  #  --property "$PROPERTY_NAME"
 
 done
 
